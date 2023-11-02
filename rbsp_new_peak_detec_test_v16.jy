@@ -1,0 +1,237 @@
+from org.das2.qds import DataSetUtil
+
+tr =getParam('timerange', '2013-01-17')
+sc = getParam('sc','rbspa','spacecraft', ['rbspa','rbspb'] )
+kind = getParam('kind','pk','peak or average', ['pk', 'av'])
+bin = getParam('bin', 7, 'bin number', [2,3,4,5,6,7,8,9,10,11,12,13,14] )
+stdevs = getParam('stdevs', 4.0, 'number of standard devs away from mean', [3.5, 4.0, 4.75, 5.0, 5.5, 5.75, 6.0, 6.75])
+window = getParam('window', 19, 'window size for sliding average', [11, 13, 15, 17, 19, 21, 23])
+
+reset()
+from java.lang.Double import NaN
+try:
+    #pk = getDataSet('http://rbsp.space.umn.edu/data/rbsp/'+sc+'/l2/fbk/$Y/'+sc+'_efw-l2_fbk_$Y$m$d_v$v.cdf?fbk13_e12dc_'+kind, tr)
+    #pk = getDataSet('vap+cdaweb:ds='+sc.upper()+'_EFW-L2_FBK&filter=fbk&id=fbk13_e12dc_'+kind,tr)
+    pk = getDataSet('https://cdaweb.gsfc.nasa.gov/sp_phys/data/rbsp/'+sc+'/l2/efw/fbk/$Y/'+sc+'_efw-l2_fbk_$Y$m$d_v$v.cdf?fbk13_e12dc_'+kind,tr)
+except:   
+    #pk = getDataSet('http://rbsp.space.umn.edu/data/rbsp/'+sc+'/l2/fbk/$Y/'+sc+'_efw-l2_fbk_$Y$m$d_v$v.cdf?fbk7_e12dc_'+kind, tr)
+    #pk = getDataSet('vap+cdaweb:ds='+sc.upper()+'_EFW-L2_FBK&filter=fbk&id=fbk7_e12dc_'+kind,tr)
+    pk = getDataSet('https://cdaweb.gsfc.nasa.gov/sp_phys/data/rbsp/'+sc+'/l2/efw/fbk/$Y/'+sc+'_efw-l2_fbk_$Y$m$d_v$v.cdf?fbk7_e12dc_'+kind,tr)
+
+if sc == 'rbspa':
+    sc_sc = 'A'
+else:
+    sc_sc = 'B'    
+mlt= getDataSet('vap+das2server:https://emfisis.physics.uiowa.edu/das/server?dataset=Van_Allen_Probes/'+sc_sc+'/Ephemeris/Geomagnetic&interval=60&item=plane_2', tr)
+l = getDataSet('vap+das2server:https://emfisis.physics.uiowa.edu/das/server?dataset=Van_Allen_Probes/'+sc_sc+'/Ephemeris/Geomagnetic&interval=60&item=plane_3', tr)
+mlat= getDataSet('vap+das2server:https://emfisis.physics.uiowa.edu/das/server?dataset=Van_Allen_Probes/'+sc_sc+'/Ephemeris/Geomagnetic&interval=60&item=plane_1', tr)
+if sc == 'rbspa':
+    ab = 'A'
+else:
+    ab = 'B'    
+
+    
+totalPowerE= getDataSet('vap+cdaweb:ds=RBSP-A_WFR-SPECTRAL-MATRIX_EMFISIS-L2&filter=rbsp-'+ab+'_WFR&id=TotalPowerE',tr)
+
+
+pk = trim(pk, tr)
+
+
+pk = slice1(pk, bin)
+
+
+
+freq_bin = pk.property( QDataSet.CONTEXT_0 )
+plot(0,totalPowerE,title=freq_bin)
+
+dom.plots[0].yaxis.reference =freq_bin.svalue()
+
+
+
+pk.putProperty(QDataSet.CONTEXT_0,None)
+
+pkfft = fftPower(pk,128,2,'Hann',None)
+
+
+#find peak frequency 
+ff = pkfft.property( QDataSet.DEPEND_1)
+amps = pkfft.property( QDataSet.DEPEND_2)
+tt = pkfft.property(QDataSet.DEPEND_0)
+dss= pkfft
+
+dsb= DataSetBuilder(2,100,2)
+for i in xrange(len(pkfft)):
+    ds= dss[i]
+    
+    xx= xtags(ds)
+    
+    mean = smooth( ds,window )
+    
+    mads = smooth( abs( ds - mean ), window )
+    
+    allowedDevs = mads * stdevs
+
+    actualDeviations = ds - mean 
+    
+    r = where( actualDeviations.gt(allowedDevs).and(ds.gt(1e-20)) )
+
+
+    for j in xrange(len(r)):
+        dsb.nextRecord([tt[i],ff[r[j]]])
+
+    
+bluepoints= dsb.getDataSet()
+x = bluepoints[:,0]
+y = bluepoints[:,1]
+
+
+r = where(within(y,'0.7 to 3.0'))
+bluepoints= bluepoints[r]
+x = bluepoints[:,0]
+y = bluepoints[:,1]
+
+
+
+keep= ones(len(x))
+cadence= DataSetUtil.guessCadence( tt, None )
+cadencey= DataSetUtil.guessCadence( ff, None )
+
+dxx = ones(len(bluepoints))
+dyy = ones(len(bluepoints))
+
+
+s= sort(y)
+u= uniq(y,s)
+for u1 in u:
+    r = where(y.eq(y[u1]))
+    print 'r=', r
+    if len(r)<2: 
+        keep[r]=0
+        continue
+    for i in xrange(len(r)):
+        if i==0:
+            dx = x[r[i+1]]-x[r[i]]
+        elif i==len(r)-1:
+            dx = x[r[i]]-x[r[i-1]]
+        else:
+            try:
+                #try because there could only be one point and nothing to compare to
+                dx1 = x[r[i]]-x[r[i-1]]
+                dx2 = x[r[i+1]]-x[r[i]]
+                dx = lesserOf(dx1, dx2)
+            except:
+                dx = datum('500.0 s')
+        if dx >cadence*1.5:
+            keep[r[i]]=0
+        dxx[r[i]] = dx
+        dyy[r[i]] = datum('0.0 Hz')
+
+
+
+r = where(keep.eq(0))
+xbluepoints=xtags(bluepoints)
+ybluepoints=ytags(bluepoints)
+
+bluepoints[r] = NaN
+ybluepoints[r] = NaN
+
+
+howmany= zeros(len(dxx))
+h=0
+
+#build a new dataset that includes h, timetag, and frequency
+#we are putting in a new NaN point where the cadence in the x is larger than what we want
+#h is counting up how many in a row we have with consecutive points
+dsb= DataSetBuilder(2,len(dxx),3)
+
+xbluepoints=xtags(bluepoints)
+ybluepoints=ytags(bluepoints)
+
+
+s= sort(y)
+u= uniq(y,s)
+for u1 in u:
+    h = 0
+    r = where(y.eq(y[u1]))
+    #r= where( y.gt(y[u1]-cadencey ).and( y.lt(y[u1]-cadencey) ) )
+    if len(r)<=2:
+        for i in xrange(len(r)):
+            h=0
+            dsb.nextRecord([0,xbluepoints[r[i]],NaN])
+            continue
+    for i in xrange(len(r)):
+        if i>0:
+            if abs(x[r[i]]-x[r[i-1]])> cadence*1.5:
+                h=0
+                dsb.nextRecord([0,xbluepoints[r[i]],NaN])
+        if dxx[r[i]]<= cadence*1.5:
+            h = h+1
+            dsb.nextRecord([h, xbluepoints[r[i]], ybluepoints[r[i]]])
+    else:
+        h=0
+        dsb.nextRecord([0,xbluepoints[r[i]],NaN])
+
+            
+          
+            
+howmany= dsb.getDataSet()
+        
+
+#Now we start from the end of howmany and work our way backwards, changing 1,2,3,4 to all 4,4,4,4 so we know to keep those points
+for i in xrange(len(howmany)-1,-1,-1):
+    if howmany[i,0]==0:
+        h=0
+    else:
+        if h==0:
+            h= howmany[i,0]
+        else:
+            howmany[i,0]=h
+
+
+r = where(howmany[:,0].ge(3.0))
+bluepoints=howmany[r,1:]
+
+
+if len(r)==0:
+    raise Exception('no points detected')
+
+
+plot(1,pkfft,zrange = [1.0E-15, 1.0E-5 ])
+p,pe = plot(2,pkfft,zrange = [1.0E-15, 1.0E-5 ])
+
+
+ 
+p,pe = plot(2,bluepoints,lineStyle=None, symbolSize=10, color='blue', overplotOf = p)
+pe.controller.renderer.backgroundThick='1em+3px'
+print len(bluepoints)
+tt1= unbundle(bluepoints,0)
+ff1= unbundle(bluepoints,1)
+ff1.putProperty(QDataSet.NAME,'frequency')
+
+
+s = sort(tt1)
+tt1 = tt1[s]
+
+mlt = synchronizeNN(tt1, mlt)
+l = synchronizeNN(tt1, l)
+mlat = synchronizeNN(tt1, mlat)
+
+# to combine files in unix: cat *.dat > combined.dat
+scs= replicate( dataset(Units.nominal().createDatum(sc)), len(tt1) )
+freq_bins= replicate( (freq_bin), len(tt1) )
+
+scs.putProperty(QDataSet.NAME,'spacecraft')
+freq_bins.putProperty(QDataSet.NAME,'bin_freq')
+freq_bins.putProperty(QDataSet.LABEL,'bin_freq')
+
+
+bin_num = ones(len(freq_bins))*bin  
+
+bin_num.putProperty(QDataSet.LABEL,'bin_number')
+bin_num.putProperty(QDataSet.NAME,'bin_number')
+
+#formatDataSet( bundle( tt1, freq_bins, scs, ff1, mlt, l, mlat ), '/tmp/ap/output.%s.$s.%s.dat' % (tr,sc,bin) )
+dss = bundle(tt1, freq_bins)
+formatDataSet( bundle( dss, bin_num, scs, ff1, mlt, l, mlat ), '/tmp/ap/output.%s.%s.%02d.dat' % (tr,sc,bin) )
+
+
