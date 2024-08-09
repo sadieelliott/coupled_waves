@@ -70,8 +70,7 @@ if freq_bin == '2':
 pkfft_orig = fftPower(pkwave,1024,2,'Hanning',None)
 
 reset()
-plot(0,pkwave)
-stop
+
 #plot(0, pkfft_orig)
 plot(0, pkfft_orig, yrange = freq_range)
 
